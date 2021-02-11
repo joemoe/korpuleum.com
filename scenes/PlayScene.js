@@ -4,6 +4,7 @@ export default class PlayScene extends Phaser.Scene {
 
 		this.me = null;
 		this.korpi = null;
+		this.korpiFromTheOtherSide = {};
 		this.halos = null;
 
 		this.inAction = false;
@@ -21,6 +22,10 @@ export default class PlayScene extends Phaser.Scene {
 		this.cursors = null;
 		this.keyR = null;
 		this.keyH = null;
+
+		this.socket = null;
+		this.socketOpen = false;
+		this.randomId = null;
 	}
 
 	preload() {
@@ -35,7 +40,7 @@ export default class PlayScene extends Phaser.Scene {
 		this.korpi.add(christi);
 		this.korpi.add(deus);
 
-		this.me = this.makeMe(this.createKorpus(512, 256, 0xff0000));
+		this.me = this.makeMe(this.createKorpus(512, 256, "0x" + ((1<<24)*Math.random() | 0).toString(16)));
 
 		//this.cameras.main.setBounds(0, 0, 1024, 512);
 		//this.cameras.main.startFollow(this.me);
@@ -43,7 +48,72 @@ export default class PlayScene extends Phaser.Scene {
 		this.cursors = this.input.keyboard.createCursorKeys();
 		this.keyR = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.R);
 		this.keyH = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.H);
+
+		this.id = Math.round(Math.random() * 1000000).toString(16);
+		this.socket = new WebSocket("wss://us-nyc-1.websocket.me/v3/1?api_key=25qjh3ruA1KmjBH9whPrIZWmiQcQTxcDB26vjL7n&notify_self");
+		let t = this;
+		this.socket.onmessage = function(message) {
+			t.updateFromTheOtherSide(JSON.parse(message.data));
+		}
+		this.socket.onopen = function() {
+			t.socket.send(JSON.stringify({
+				id: t.id,
+				color: t.me.getData('color'),
+				x: t.me.body.center.x,
+				y: t.me.body.center.y,
+				love: t.me.getData("love"),
+				rage: t.me.getData("rage")
+			}));
+			t.socketOpen = true;
+			t.time.addEvent({
+				delay: 50,
+				loop: true,
+				callback: function() {
+					t.socket.send(JSON.stringify({
+						id: t.id,
+						color: t.me.getData('color'),
+						x: t.me.body.center.x,
+						y: t.me.body.center.y,
+						love: t.me.getData("love"),
+						rage: t.me.getData("rage")
+					}));
+				}
+			});
+
+			t.time.addEvent({
+				delay: 500,
+				loop: true,
+				callback: function() {
+					for(let i = 0; i < t.korpi.getChildren().length; i++) {
+						let child = t.korpi.getChildren()[i];
+						if(t.time.now - child.getData('ping') > 500) {
+							t.korpiFromTheOtherSide[child.getData('id')] = false;
+							child.destroy();
+						}
+					}
+				}
+			})
+		}
 	}
+
+	updateFromTheOtherSide(data) {
+		if(data.id == this.id) return;
+
+		if(!this.korpiFromTheOtherSide[data.id]) {
+			let christi = this.createKorpus(
+				data.x, data.y, 
+				data.color, data.love, data.rage
+			);
+			christi.setData('id', data.id);
+			this.korpi.add(christi);
+			this.korpiFromTheOtherSide[data.id] = christi;
+			console.log(this.korpiFromTheOtherSide);
+		} else {
+			this.korpiFromTheOtherSide[data.id].setPosition(data.x, data.y);
+		}
+		this.korpiFromTheOtherSide[data.id].setData('ping', this.time.now);
+	}
+
 
 	update() {
 		if(this.inAction) return;
@@ -113,7 +183,7 @@ export default class PlayScene extends Phaser.Scene {
 	        hold: 1000,
 	        yoyo: true,
 	        repeat: 0,
-	        onComplete: function () { t.inAction = false; },
+	        onComplete: function () { t.endAction(a, b, 0.2, -0.2); },
 	    });
 	}
 
@@ -134,26 +204,41 @@ export default class PlayScene extends Phaser.Scene {
 	        duration: 50,
 	        yoyo: true,
 	        repeat: 3,
-	        onComplete: function () { t.inAction = false; },
+	        onComplete: function () { t.endAction(a, b, -0.2, 0.2); },
 	    });
 	}
 
-	createKorpus(x, y, color, love = 1, anger = 0) {
+	endAction(a, b, loveDelta, rageDelta) {
+		this.inAction = false;
+		a.setData('love', Math.min(1, Math.max(0, a.getData('love') + loveDelta)));
+		a.setData('rage', Math.min(1, Math.max(0, a.getData('rage') + rageDelta)));
+		b.setData('love', Math.min(1, Math.max(0, b.getData('love') + loveDelta)));
+		b.setData('rage', Math.min(1, Math.max(0, b.getData('rage') + rageDelta)));
+		this.paintKorpus(a, a.getData('color'), a.getData('love'), a.getData('rage'));
+		this.paintKorpus(b, b.getData('color'), b.getData('love'), b.getData('rage'));
+	}
+
+	createKorpus(x, y, color, love = 1, rage = 0, name = "") {
 		let c = this.add.graphics({ x: x, y: y });
 
-		this.paintKorpus(c, color, love, anger);
+		this.paintKorpus(c, color, love, rage, name);
 
 		this.physics.add.existing(c);
 		c.body.setCircle(12, -12, -12);
 		this.input.enableDebug(c);
+		c.setData('love', love);
+		c.setData('rage', rage);
+		c.setData('color', color);
+		c.setData('name', name);
 		return c;
 	}
 
-	paintKorpus(korpus, color, love, anger) {
+	paintKorpus(korpus, color, love, rage, name = "") {
+		korpus.clear();
 		korpus.fillStyle(color);
 
 		// horns
-		let r1 = 11, r2 = Math.round(r1 + 3 + 10 * anger), 
+		let r1 = 11, r2 = Math.round(r1 + 3 + 10 * rage), 
 			aP = -Math.PI / 4, aD = Math.PI / 6;
 		korpus.fillTriangle(
 			r1 * Math.cos(aP + aD), r1 * Math.sin(aP + aD), 
